@@ -1,6 +1,6 @@
 MODULE_TOPDIR = ../..
 
-PGM = i.hyper.continuum
+PGM = i.hyper.albedo
 
 include $(MODULE_TOPDIR)/include/Make/Script.make
 include $(MODULE_TOPDIR)/include/Make/Html.make
