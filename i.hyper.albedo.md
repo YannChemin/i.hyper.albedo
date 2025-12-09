@@ -22,11 +22,11 @@ sampling is irregular or sparse in certain wavelength regions.
 
 Three weighting methods are available for spectral integration:
 
-- **trapezoidal** -- Standard trapezoidal rule integration based on
+- **trapezoidal** : Standard trapezoidal rule integration based on
   spectral bandwidth between adjacent bands (default)
-- **solar** -- Solar irradiance-weighted integration using AM1.5 global
+- **solar** : Solar irradiance-weighted integration using AM1.5 global
   spectrum approximation or custom solar spectrum
-- **uniform** -- Equal weighting for all bands (simple arithmetic mean)
+- **uniform** : Equal weighting for all bands (simple arithmetic mean)
 
 The trapezoidal method is recommended for general use as it properly
 accounts for variable spectral sampling. Solar weighting provides the
