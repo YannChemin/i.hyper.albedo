@@ -88,8 +88,78 @@
 
 import sys
 import os
+import ctypes
+import atexit
 import grass.script as gs
 import numpy as np
+
+# Temporary 2D rasters created by extract_band(); cleaned up at exit.
+_TMP_RASTERS = []
+
+
+def _cleanup_tmp_rasters():
+    if _TMP_RASTERS:
+        gs.run_command('g.remove', type='raster', name=','.join(_TMP_RASTERS),
+                       flags='f', quiet=True)
+
+
+atexit.register(_cleanup_tmp_rasters)
+
+
+def _load_g3d_lib():
+    """Return the loaded libgrass_g3d shared library."""
+    grass_config = gs.read_command('grass', '--config', 'path').strip()
+    lib_path = os.path.join(grass_config, 'lib', 'libgrass_g3d.so')
+    lib = ctypes.CDLL(lib_path)
+    lib.Rast3d_extract_z_slice.restype = ctypes.c_int
+    lib.Rast3d_extract_z_slice.argtypes = [
+        ctypes.c_char_p,  # name3d
+        ctypes.c_char_p,  # mapset3d (NULL = search)
+        ctypes.c_int,     # z  (0-based)
+        ctypes.c_char_p,  # name2d
+    ]
+    return lib
+
+
+_G3D_LIB = None
+
+
+def extract_band(raster3d, band_num):
+    """Extract band_num (1-based) from raster3d to a temporary 2D raster.
+
+    Uses Rast3d_extract_z_slice() from libgrass_g3d: opens the map with
+    RASTER3D_NO_CACHE so Rast3d_get_block() takes the tile-bulk path
+    (one disk read per tile) instead of the slow per-voxel cache loop.
+
+    Returns the name of the temporary 2D raster.
+    """
+    global _G3D_LIB
+    if _G3D_LIB is None:
+        _G3D_LIB = _load_g3d_lib()
+
+    # r.mapcalc band refs use 1-based indexing; z is 0-based
+    z = band_num - 1
+    tmp_name = f"tmp_hyper_albedo_{raster3d}_{band_num}"
+    # Sanitise: GRASS map names cannot contain '@' or '#'
+    tmp_name = tmp_name.replace('@', '_').replace('#', '_').replace('.', '_')
+
+    # Split "name@mapset" if present
+    if '@' in raster3d:
+        name3d, mapset3d = raster3d.split('@', 1)
+    else:
+        name3d, mapset3d = raster3d, ''
+
+    ret = _G3D_LIB.Rast3d_extract_z_slice(
+        name3d.encode(),
+        mapset3d.encode() if mapset3d else None,
+        ctypes.c_int(z),
+        tmp_name.encode(),
+    )
+    if ret != 0:
+        gs.fatal(f"Rast3d_extract_z_slice failed for band {band_num} of {raster3d}")
+
+    _TMP_RASTERS.append(tmp_name)
+    return tmp_name
 
 
 def get_raster3d_info(raster3d):
@@ -336,21 +406,26 @@ def print_band_info(bands, weights):
 
 
 def calculate_albedo(raster3d, bands, weights, output):
-    """Calculate weighted albedo from bands"""
-    gs.message("Calculating albedo using weighted integration...")
-    
-    # Build mapcalc expression for weighted sum
+    """Calculate weighted albedo from bands.
+
+    Each band is first extracted to a temporary 2D raster via
+    Rast3d_extract_z_slice() (tile-bulk read, RASTER3D_NO_CACHE), then
+    r.mapcalc operates on plain 2D maps — no per-voxel 3D→2D conversion
+    inside r.mapcalc.
+    """
+    gs.message("Extracting band slices and calculating albedo...")
+
     terms = []
     for band, weight in zip(bands, weights):
-        band_name = f"{raster3d}#{band['band_num']}"
-        terms.append(f"({weight} * {band_name})")
-    
+        gs.verbose(f"  Extracting band {band['band_num']} ({band['wavelength']:.1f} nm)")
+        tmp = extract_band(raster3d, band['band_num'])
+        terms.append(f"({weight} * {tmp})")
+
     expression = f"{output} = " + " + ".join(terms)
-    
+
     gs.verbose(f"Mapcalc expression length: {len(expression)} characters")
     gs.verbose(f"Number of terms: {len(terms)}")
-    
-    # Execute r.mapcalc
+
     try:
         gs.run_command('r.mapcalc', expression=expression, overwrite=True)
         gs.message(f"Successfully created albedo map: {output}")
