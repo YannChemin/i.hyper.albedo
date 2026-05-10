@@ -7,6 +7,20 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 ##############################################################################
 
+# ── ras3d standalone detection ────────────────────────────────────────────────
+import os as _os
+_RAS3D = False
+if not _os.environ.get('GISBASE'):
+    try:
+        import importlib.util as _ilu
+        if _ilu.find_spec('ras3d') and _ilu.find_spec('ras3d_grass_shim'):
+            from ras3d_grass_shim import install as _r3_install
+            _r3_install()
+            _RAS3D = True
+    except Exception:
+        pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 # %module
 # % description: Calculate broadband albedo from hyperspectral imagery using spectral distance-weighted integration
 # % keyword: imagery
@@ -133,6 +147,19 @@ def extract_band(raster3d, band_num):
 
     Returns the name of the temporary 2D raster.
     """
+    if _RAS3D:
+        import ras3d as _r3
+        import ras3d_write as _r3w
+        from ras3d_grass_shim import get_band_cache
+        tmp_name = f"tmp_hyper_albedo_{raster3d}_{band_num}"
+        tmp_name = tmp_name.replace('@', '_').replace('#', '_').replace('.', '_')
+        _h = _r3.open_cube(raster3d)
+        _arr = _r3.get_band(_h, band_num - 1)
+        get_band_cache()[tmp_name] = _arr
+        _r3w.write_raster2d(_r3w.outpath(tmp_name), _arr, _h)
+        _r3.close_cube(_h)
+        _TMP_RASTERS.append(tmp_name)
+        return tmp_name
     global _G3D_LIB
     if _G3D_LIB is None:
         _G3D_LIB = _load_g3d_lib()
@@ -227,6 +254,21 @@ def convert_wavelength_to_nm(wavelength, unit):
 
 def get_all_band_wavelengths(raster3d, only_valid=False):
     """Extract all band wavelengths and metadata from 3D raster"""
+    if _RAS3D:
+        import json as _json
+        for _sfx in ('', '.tif', '.tiff', '.h5', '.hdf5'):
+            _base = raster3d.removesuffix(_sfx) if raster3d.endswith(_sfx) else raster3d
+            _wlp = _base + '.wl.json'
+            if _os.path.exists(_wlp):
+                with open(_wlp) as _f:
+                    _wl = _json.load(_f)
+                _wl_nm = [w * 1000 if w < 10 else w for w in _wl]
+                return [{'band_num': i+1, 'wavelength': wl, 'fwhm': None, 'valid': 1}
+                        for i, wl in enumerate(_wl_nm)]
+        import ras3d as _r3
+        _h = _r3.open_cube(raster3d); _r = _r3.get_region(_h); _r3.close_cube(_h)
+        return [{'band_num': i+1, 'wavelength': float(i+1), 'fwhm': None, 'valid': 1}
+                for i in range(_r['depths'])]
     info = get_raster3d_info(raster3d)
     depths = int(info['depths'])
     
